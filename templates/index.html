@@ -1,14 +1,297 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Econ Assistant</title>
+    <title>Econ Assistant - Self-Learning Dataset Expert</title>
     <style>
-        body { font-family: Arial; margin: 20px; }
-        h1 { color: #333; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { 
+            max-width: 1000px; 
+            margin: 0 auto; 
+        }
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        h1 { 
+            color: #333; 
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+        .subtitle {
+            color: #666;
+            font-size: 0.9em;
+        }
+        .section { 
+            background: white; 
+            padding: 25px; 
+            margin: 20px 0; 
+            border-radius: 12px; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
+        }
+        h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+        textarea { 
+            width: 100%; 
+            padding: 15px; 
+            margin: 10px 0; 
+            font-size: 15px; 
+            border: 2px solid #e0e0e0; 
+            border-radius: 8px;
+            font-family: inherit;
+            resize: vertical;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; 
+            cursor: pointer; 
+            border: none;
+            padding: 12px 30px;
+            font-size: 15px;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover { 
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .response-box { 
+            background: #f8f9fa; 
+            padding: 20px; 
+            margin: 15px 0; 
+            border-left: 4px solid #667eea; 
+            border-radius: 8px;
+            line-height: 1.6;
+        }
+        .tool-call {
+            background: #e3f2fd;
+            padding: 10px;
+            margin: 8px 0;
+            border-radius: 6px;
+            font-size: 0.9em;
+            border-left: 3px solid #2196f3;
+        }
+        .tool-name {
+            font-weight: bold;
+            color: #1976d2;
+        }
+        .kb-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 2em;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        pre {
+            background: #263238;
+            color: #aed581;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 0.85em;
+        }
     </style>
 </head>
 <body>
-    <h1>Welcome to Econ Assistant</h1>
-    <p>Economic analysis and assistance tool</p>
+    <div class="container">
+        <div class="header">
+            <h1>🧠 Econ Assistant</h1>
+            <p class="subtitle">Self-Learning Dataset Expert • Powered by Ollama + RAG</p>
+        </div>
+        
+        <div class="section">
+            <h2>📊 Knowledge Base Status</h2>
+            <button onclick="loadKnowledgeBaseInfo()">Refresh Stats</button>
+            <div id="kbStats" class="kb-stats"></div>
+        </div>
+        
+        <div class="section">
+            <h2>💬 Ask Questions</h2>
+            <textarea id="questionInput" placeholder="Ask me anything about the dataset or related topics...
+
+Examples:
+• What's the average tariff rate?
+• Which country exports the most to Moldova?
+• What is Moldova's GDP in 2025?
+• Calculate the total import value from Germany" rows="5"></textarea>
+            <button onclick="askQuestion()" id="askBtn">Ask Agent</button>
+            <div id="queryResponse"></div>
+        </div>
+        
+        <div class="section">
+            <h2>📈 Dataset Information</h2>
+            <button onclick="getDatasetInfo()">View Details</button>
+            <div id="datasetInfo" class="response-box" style="display:none;"></div>
+        </div>
+    </div>
+
+    <script>
+        function loadKnowledgeBaseInfo() {
+            fetch('/api/dataset/info')
+            .then(r => r.json())
+            .then(data => {
+                const kb = data.knowledge_base;
+                const dataset = data.dataset;
+                
+                let html = `
+                    <div class="stat-card">
+                        <div class="stat-label">Dataset Rows</div>
+                        <div class="stat-number">${dataset.rows}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Columns</div>
+                        <div class="stat-number">${dataset.columns.length}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Total Knowledge</div>
+                        <div class="stat-number">${kb.total_documents}</div>
+                    </div>
+                `;
+                
+                if (kb.by_source) {
+                    for (const [source, count] of Object.entries(kb.by_source)) {
+                        html += `
+                            <div class="stat-card">
+                                <div class="stat-label">${source}</div>
+                                <div class="stat-number">${count}</div>
+                            </div>
+                        `;
+                    }
+                }
+                
+                document.getElementById('kbStats').innerHTML = html;
+            })
+            .catch(e => alert('Error: ' + e));
+        }
+        
+        function getDatasetInfo() {
+            const div = document.getElementById('datasetInfo');
+            if (div.style.display === 'none') {
+                fetch('/api/dataset/info')
+                .then(r => r.json())
+                .then(data => {
+                    div.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+                    div.style.display = 'block';
+                })
+                .catch(e => alert('Error: ' + e));
+            } else {
+                div.style.display = 'none';
+            }
+        }
+        
+        function askQuestion() {
+            const question = document.getElementById('questionInput').value;
+            if (!question) return;
+            
+            const btn = document.getElementById('askBtn');
+            const responseDiv = document.getElementById('queryResponse');
+            
+            btn.disabled = true;
+            btn.innerHTML = 'Thinking<span class="loading"></span>';
+            responseDiv.innerHTML = '<em>Processing your question...</em>';
+            
+            fetch('/api/agent/query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question })
+            })
+            .then(r => r.json())
+            .then(data => {
+                let html = `<div class="response-box">
+                    <strong>Question:</strong> ${data.question}<br><br>
+                    <strong>Answer:</strong> ${data.answer}
+                </div>`;
+                
+                if (data.tool_calls && data.tool_calls.length > 0) {
+                    html += '<div class="response-box"><strong>🛠️ Tools Used:</strong><br>';
+                    data.tool_calls.forEach(tc => {
+                        html += `<div class="tool-call">
+                            <span class="tool-name">${tc.tool}</span>(${JSON.stringify(tc.arguments)})<br>
+                            <small>→ ${tc.result.substring(0, 150)}${tc.result.length > 150 ? '...' : ''}</small>
+                        </div>`;
+                    });
+                    html += '</div>';
+                }
+                
+                responseDiv.innerHTML = html;
+                
+                // Refresh KB stats
+                loadKnowledgeBaseInfo();
+            })
+            .catch(e => {
+                responseDiv.innerHTML = `<div class="response-box" style="border-left-color: #f44336;">
+                    <strong style="color: #f44336;">Error:</strong> ${e}
+                </div>`;
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = 'Ask Agent';
+            });
+        }
+        
+        // Enter to submit
+        document.getElementById('questionInput').addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 'Enter') {
+                askQuestion();
+            }
+        });
+        
+        // Load initial stats
+        window.onload = () => {
+            loadKnowledgeBaseInfo();
+        };
+    </script>
 </body>
 </html>
