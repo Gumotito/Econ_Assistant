@@ -7,6 +7,12 @@ from typing import List, Dict, Any
 import chromadb
 from chromadb.utils import embedding_functions
 import requests
+from functools import wraps, lru_cache
+# Add Flask-Limiter
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+import logging
+from logging.handlers import RotatingFileHandler
 
 load_dotenv()
 
@@ -35,23 +41,37 @@ except Exception as e:
 
 app = Flask(__name__)
 
+# Configuration
+class Config:
+    """Application configuration"""
+    DATA_DIR = os.getenv('DATA_DIR', 'data')
+    INITIAL_CSV = os.getenv('INITIAL_CSV', 'test_moldova_imports_2025.csv')
+    CHROMA_PERSIST_DIR = os.getenv('CHROMA_PERSIST_DIR', 'chroma_db')
+    MAX_QUERY_LENGTH = int(os.getenv('MAX_QUERY_LENGTH', 5000))
+    MAX_ITERATIONS = int(os.getenv('MAX_ITERATIONS', 3))
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'mistral')
+    
+app.config.from_object(Config)
+
+# Initialize Limiter
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
+
 # Global storage
 current_dataset = None
 dataset_info = {}
 chroma_client = None
 collection = None
 
-# Configuration
-DATA_DIR = "data"
-INITIAL_CSV = "test_moldova_imports_2025.csv"
-CHROMA_PERSIST_DIR = "chroma_db"
-
 # Initialize ChromaDB for RAG with persistence
 def init_vector_db():
     global chroma_client, collection
     
     # Create persistent client
-    chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+    chroma_client = chromadb.PersistentClient(path=app.config['CHROMA_PERSIST_DIR'])
     
     embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name="all-MiniLM-L6-v2"
@@ -68,10 +88,16 @@ def test_ollama():
     try:
         import ollama
         models = ollama.list()
-        print(f"✓ Ollama connected. Available models: {[m['name'] for m in models['models']]}")
+        if models and 'models' in models:
+            model_names = [m.get('name', 'unknown') for m in models.get('models', [])]
+            print(f"✓ Ollama connected. Available models: {model_names}")
+        else:
+            print(f"✓ Ollama connected. Models: {models}")
         return True
     except Exception as e:
         print(f"✗ Ollama error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 # LLM Client with LangSmith tracing
@@ -270,11 +296,29 @@ def web_search(query: str) -> str:
 
 @traceable(name="calculate", run_type="tool")
 def calculate(expression: str) -> str:
-    """Safe calculation"""
+    """Safe calculation using ast.literal_eval"""
+    import ast
+    import operator as op
+    
+    # Supported operations
+    ops = {
+        ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
+        ast.Div: op.truediv, ast.Pow: op.pow, ast.Mod: op.mod,
+        ast.USub: op.neg
+    }
+    
+    def eval_expr(node):
+        if isinstance(node, ast.Num):
+            return node.n
+        elif isinstance(node, ast.BinOp):
+            return ops[type(node.op)](eval_expr(node.left), eval_expr(node.right))
+        elif isinstance(node, ast.UnaryOp):
+            return ops[type(node.op)](eval_expr(node.operand))
+        else:
+            raise ValueError(f"Unsupported operation: {type(node)}")
+    
     try:
-        allowed = {"abs": abs, "round": round, "min": min, "max": max, "sum": sum}
-        result = eval(expression, {"__builtins__": {}}, allowed)
-        return str(result)
+        return str(eval_expr(ast.parse(expression, mode='eval').body))
     except Exception as e:
         return f"Calculation error: {str(e)}"
 
@@ -329,6 +373,7 @@ def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
         return tools_map[tool_name](**arguments)
     return f"Unknown tool: {tool_name}"
 
+# Use vectorized operations
 def analyze_dataset(df, clear_existing=False):
     """Generate dataset analysis and index for RAG"""
     info = {
@@ -356,10 +401,12 @@ def analyze_dataset(df, clear_existing=False):
         metadatas = []
         ids = []
         
-        for idx, row in df.iterrows():
-            doc = " | ".join([f"{col}: {val}" for col, val in row.items()])
+        # Vectorized string concatenation
+        for idx in range(len(df)):
+            row = df.iloc[idx]
+            doc = " | ".join([f"{col}: {row[col]}" for col in df.columns])
             documents.append(doc)
-            metadatas.append({"row_id": int(idx), "source": "dataset"})
+            metadatas.append({"row_id": idx, "source": "dataset"})
             ids.append(f"row_{idx}")
         
         batch_size = 100
@@ -381,7 +428,7 @@ def load_initial_dataset():
     """Load initial dataset on startup"""
     global current_dataset, dataset_info
     
-    csv_path = INITIAL_CSV
+    csv_path = app.config['INITIAL_CSV']
     if not os.path.exists(csv_path):
         print(f"⚠ Initial dataset not found: {csv_path}")
         return False
@@ -428,6 +475,37 @@ def add_knowledge(content: str, source: str = "web_search", metadata: Dict = Non
         print(f"✗ Failed to add knowledge: {e}")
         return False
 
+# Add validation decorator
+def validate_input(max_length=10000):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            data = request.get_json()
+            if data:
+                for key, value in data.items():
+                    if isinstance(value, str) and len(value) > max_length:
+                        return jsonify({'error': f'{key} exceeds maximum length'}), 400
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+def validate_env_vars():
+    """Validate required environment variables"""
+    required = {
+        'LANGCHAIN_API_KEY': 'LangSmith API key',
+        'LANGCHAIN_PROJECT': 'LangSmith project name'
+    }
+    
+    missing = []
+    for var, description in required.items():
+        if not os.getenv(var):
+            missing.append(f"{var} ({description})")
+    
+    if missing:
+        app.logger.warning(f"Missing env vars: {', '.join(missing)}")
+        return False
+    return True
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -458,6 +536,8 @@ def upload_dataset():
         return jsonify({'error': str(e)}), 400
 
 @app.route('/api/agent/query', methods=['POST'])
+@limiter.limit("20 per minute")
+@validate_input(max_length=5000)
 @traceable(name="agent_query", run_type="chain")
 def agent_query():
     """Main agent endpoint with function calling"""
@@ -781,7 +861,69 @@ def filter_data():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# Memoized (cached) version of search_dataset
+from functools import lru_cache
+import hashlib
+
+@lru_cache(maxsize=100)
+def cached_search_dataset(query_hash: str, query: str) -> str:
+    """Cached version of search_dataset"""
+    if collection is None:
+        return "Dataset not indexed yet"
+    
+    results = collection.query(query_texts=[query], n_results=5)
+    
+    if results['documents'] and results['documents'][0]:
+        # Get metadata to show sources
+        docs = results['documents'][0]
+        metas = results['metadatas'][0] if results['metadatas'] else [{}] * len(docs)
+        
+        formatted_results = []
+        for doc, meta in zip(docs, metas):
+            source = meta.get('source', 'dataset')
+            if source == 'web_search':
+                formatted_results.append(f"[From web search] {doc}")
+            elif source == 'learned':
+                formatted_results.append(f"[Learned info] {doc}")
+            else:
+                formatted_results.append(f"[Dataset] {doc[:200]}")
+        
+        context = "\n\n".join(formatted_results)
+        return f"Found relevant information:\n\n{context}"
+    return "No matching information found"
+
+def search_dataset(query: str) -> str:
+    query_hash = hashlib.md5(query.encode()).hexdigest()
+    return cached_search_dataset(query_hash, query)
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for monitoring"""
+    status = {
+        'status': 'healthy',
+        'dataset_loaded': current_dataset is not None,
+        'vector_db_ready': collection is not None,
+        'knowledge_base_size': collection.count() if collection else 0,
+        'ollama_connected': test_ollama()
+    }
+    return jsonify(status)
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Endpoint not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    app.logger.error(f'Server Error: {error}')
+    return jsonify({'error': 'Internal server error'}), 500
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    app.logger.error(f'Unhandled Exception: {str(e)}')
+    return jsonify({'error': 'An unexpected error occurred'}), 500
+
 if __name__ == '__main__':
+    validate_env_vars()
     print("\n" + "="*60)
     print("🤖 Econ Assistant - Self-Learning Dataset Expert")
     print("="*60)
@@ -809,4 +951,16 @@ if __name__ == '__main__':
     print("  • Learn from user interactions")
     print("="*60 + "\n")
     
-    app.run(debug=True)
+    # Setup logging
+    if not app.debug:
+        os.makedirs('logs', exist_ok=True)
+        file_handler = RotatingFileHandler('logs/econ_assistant.log', maxBytes=10240, backupCount=10)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+        ))
+        file_handler.setLevel(logging.INFO)
+        app.logger.addHandler(file_handler)
+        app.logger.setLevel(logging.INFO)
+        app.logger.info('Econ Assistant startup')
+    
+    app.run(debug=True, host='0.0.0.0')
