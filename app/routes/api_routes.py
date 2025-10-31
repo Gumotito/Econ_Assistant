@@ -49,13 +49,17 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
         "forecast_trade_balance": forecast_trade_balance
     }
     
-    def format_forecast_result(result_json: str, tool_name: str) -> str:
-        """Format forecast results in user-friendly way"""
+    def format_forecast_result(result_json: str, tool_name: str) -> tuple:
+        """Format forecast results in user-friendly way with optional visualization
+        
+        Returns:
+            tuple: (formatted_string, updated_json_with_viz) or (formatted_string, None)
+        """
         try:
             data = json.loads(result_json)
             
             if "error" in data:
-                return result_json
+                return result_json, None
             
             # Format forecast results nicely
             if tool_name in ["forecast_economic_indicator", "forecast_trade_balance"]:
@@ -63,7 +67,16 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
                 forecasts = data.get("forecasts", [])
                 
                 if not forecasts:
-                    return result_json
+                    return result_json, None
+                
+                # Try to generate visualization
+                viz_result = None
+                try:
+                    from app.agents.visualization_agent import get_visualization_agent
+                    viz_agent = get_visualization_agent()
+                    viz_result = viz_agent.auto_visualize(data, f"forecast {indicator}")
+                except Exception as e:
+                    logger.warning(f"Visualization failed: {e}")
                 
                 # Create human-readable summary
                 output = []
@@ -87,27 +100,125 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
                 if "lower_bound" in data and "upper_bound" in data:
                     output.append(f"\nConfidence range: {data['lower_bound'][0]:,.0f} - {data['upper_bound'][0]:,.0f}")
                 
-                return "\n".join(output)
+                # Add visualization link if generated
+                if viz_result:
+                    output.append(f"\n📈 **Visualization:** [View Chart]({viz_result['image_url']})")
+                    # Store in data for JSON response
+                    data['visualization'] = viz_result
+                
+                return "\n".join(output), json.dumps(data)
             
-            return result_json
+            return result_json, None
             
         except:
-            return result_json
+            return result_json, None
     
-    def execute_tool(tool_name: str, arguments: dict) -> str:
-        """Execute a tool by name"""
+    def execute_tool(tool_name: str, arguments: dict) -> tuple:
+        """Execute a tool by name with intelligent auto-recovery
+        
+        Returns:
+            tuple: (result_string, visualization_data or None)
+        """
         if tool_name in TOOL_MAP:
             result = TOOL_MAP[tool_name](**arguments)
-            # Format forecast results for better readability
+            
+            # INTELLIGENT AUTO-RECOVERY: If forecast fails due to missing data, automatically search for it
             if tool_name in ["forecast_economic_indicator", "forecast_trade_balance"]:
-                return format_forecast_result(result, tool_name)
-            return result
-        return f"Unknown tool: {tool_name}"
+                try:
+                    result_data = json.loads(result)
+                    if "error" in result_data and "Could not find indicator" in result_data.get("error", ""):
+                        # Extract indicator name
+                        indicator = arguments.get('indicator') or arguments.get('query', 'unknown')
+                        
+                        logger.info(f"🔄 Auto-recovery: Forecast failed for '{indicator}', searching official sources...")
+                        
+                        # Try to find the data from official sources
+                        search_query = f"Moldova {indicator} historical data statistics"
+                        search_result = search_official_sources(search_query)
+                        
+                        # Also try web search as backup
+                        web_result = web_search(f"Moldova {indicator} 2024 2025 statistica.md")
+                        
+                        # Check if searches returned useful data
+                        search_empty = (len(search_result) < 50 or "No results" in search_result) and \
+                                      (len(web_result) < 50 or "No results" in web_result)
+                        
+                        if search_empty:
+                            # Provide context-aware guidance with known Moldova economic indicators
+                            guidance = {
+                                "inflation": "Moldova's inflation rate typically ranges 3-8% annually. The National Bank of Moldova (NBM) at bnm.md publishes monthly inflation reports. Recent trends show moderate inflation around 4-5% in 2024-2025.",
+                                "gdp": "Moldova's GDP growth has averaged 3-5% in recent years. Check World Bank Moldova page or statistica.md for quarterly GDP data.",
+                                "unemployment": "Moldova's unemployment rate is typically 3-5%. National Bureau of Statistics (statistica.md) publishes quarterly labor market statistics.",
+                                "exchange": "MDL/USD exchange rate fluctuates between 17-19 MDL per USD. NBM provides daily rates at bnm.md.",
+                                "wage": "Average wage in Moldova is approximately 10,000-12,000 MDL/month. Statistica.md publishes monthly wage statistics.",
+                            }
+                            
+                            # Find matching guidance
+                            guidance_text = None
+                            for key, text in guidance.items():
+                                if key in indicator.lower():
+                                    guidance_text = text
+                                    break
+                            
+                            if not guidance_text:
+                                guidance_text = f"For {indicator} data, check: National Bureau of Statistics (statistica.md), National Bank of Moldova (bnm.md), World Bank Moldova, or IMF Moldova reports."
+                            
+                            combined_info = f"Context for {indicator}: {guidance_text}"
+                        else:
+                            # Save the learned information for future
+                            combined_info = f"Official sources search for {indicator}: {search_result}\n\nWeb search results: {web_result}"
+                        
+                        add_learned_info(combined_info, f"Moldova {indicator}")
+                        
+                        # Return enhanced error with guidance
+                        result_data['auto_search_performed'] = True
+                        result_data['guidance'] = combined_info
+                        result_data['helpful_message'] = f"The current dataset contains import data only. For {indicator}, I've provided guidance on where to find authoritative Moldova data. {combined_info}"
+                        
+                        return json.dumps(result_data), None
+                except:
+                    pass  # If not JSON or other error, continue normally
+                
+                # Format successful forecast results
+                formatted_text, updated_json = format_forecast_result(result, tool_name)
+                # Extract visualization data if present
+                viz_data = None
+                if updated_json:
+                    try:
+                        data = json.loads(updated_json)
+                        viz_data = data.get('visualization')
+                    except:
+                        pass
+                return formatted_text, viz_data
+            
+            return result, None
+        return f"Unknown tool: {tool_name}", None
     
     def parse_tool_calls_from_text(content: str):
-        """Parse tool calls from LLM text response"""
+        """Parse tool calls from LLM text response - handles multiple formats"""
         tools_executed = []
         
+        # Try to parse JSON-formatted tool calls (Qwen format: {"name": "tool", "arguments": {...}})
+        json_pattern = r'\{["\']name["\']\s*:\s*["\'](\w+)["\']\s*,\s*["\']arguments["\']\s*:\s*(\{[^}]+\})\}'
+        json_matches = re.finditer(json_pattern, content, re.IGNORECASE)
+        
+        for match in json_matches:
+            tool_name = match.group(1)
+            try:
+                args_str = match.group(2)
+                tool_args = json.loads(args_str)
+                
+                if tool_name in TOOL_MAP:
+                    result = execute_tool(tool_name, tool_args)
+                    tools_executed.append({'tool': tool_name, 'arguments': tool_args, 'result': result})
+            except Exception as e:
+                logger.error(f"Failed to parse JSON tool call: {e}")
+        
+        # If JSON parsing found tools, return those
+        if tools_executed:
+            return tools_executed
+        
+        # Fallback to regex parsing for Python-style function calls
         # Web search
         web_match = re.search(r'web_search\s*\(\s*query\s*=\s*["\']([^"\']+)["\']\s*\)', content, re.IGNORECASE)
         if web_match:
@@ -129,6 +240,58 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
             query = search_match.group(1)
             result = search_dataset(query)
             tools_executed.append({'tool': 'search_dataset', 'arguments': {'query': query}, 'result': result})
+        
+        # Forecast economic indicator - flexible parameter order
+        forecast_match = re.search(r'forecast_economic_indicator\s*\(([^)]+)\)', content, re.IGNORECASE)
+        if forecast_match:
+            args_str = forecast_match.group(1)
+            
+            # Extract indicator
+            indicator_match = re.search(r'indicator\s*=\s*["\']([^"\']+)["\']', args_str, re.IGNORECASE)
+            indicator = indicator_match.group(1) if indicator_match else None
+            
+            # Extract time_periods
+            periods_match = re.search(r'(?:time_periods|periods)\s*=\s*(\d+)', args_str, re.IGNORECASE)
+            time_periods = int(periods_match.group(1)) if periods_match else 12
+            
+            # Extract method
+            method_match = re.search(r'method\s*=\s*["\']([^"\']+)["\']', args_str, re.IGNORECASE)
+            method = method_match.group(1) if method_match else "ensemble"
+            
+            if indicator:
+                result = forecast_economic_indicator(indicator=indicator, time_periods=time_periods, method=method)
+                # Format the result and extract visualization
+                formatted_result, updated_json = format_forecast_result(result, 'forecast_economic_indicator')
+                tool_entry = {'tool': 'forecast_economic_indicator', 'arguments': {'indicator': indicator, 'time_periods': time_periods, 'method': method}, 'result': formatted_result}
+                # Check for visualization data
+                if updated_json:
+                    try:
+                        data = json.loads(updated_json)
+                        if 'visualization' in data:
+                            tool_entry['visualization'] = data['visualization']
+                    except:
+                        pass
+                tools_executed.append(tool_entry)
+        
+        # Forecast trade balance
+        trade_forecast_match = re.search(r'forecast_trade_balance\s*\(\s*export_indicator\s*=\s*["\']([^"\']+)["\']\s*,\s*import_indicator\s*=\s*["\']([^"\']+)["\']\s*(?:,\s*periods_ahead\s*=\s*(\d+))?\s*\)', content, re.IGNORECASE)
+        if trade_forecast_match:
+            export_ind = trade_forecast_match.group(1)
+            import_ind = trade_forecast_match.group(2)
+            periods = int(trade_forecast_match.group(3)) if trade_forecast_match.group(3) else 12
+            result = forecast_trade_balance(export_indicator=export_ind, import_indicator=import_ind, periods_ahead=periods)
+            # Format the result and extract visualization
+            formatted_result, updated_json = format_forecast_result(result, 'forecast_trade_balance')
+            tool_entry = {'tool': 'forecast_trade_balance', 'arguments': {'export_indicator': export_ind, 'import_indicator': import_ind, 'periods_ahead': periods}, 'result': formatted_result}
+            # Check for visualization data
+            if updated_json:
+                try:
+                    data = json.loads(updated_json)
+                    if 'visualization' in data:
+                        tool_entry['visualization'] = data['visualization']
+                except:
+                    pass
+            tools_executed.append(tool_entry)
         
         return tools_executed
     
@@ -193,15 +356,30 @@ Available Tools (use in this EXACT priority order):
 8. web_search(query): General web search ONLY as last resort - use search_official_sources first
 9. add_learned_info(information, category): Save insights for future use
 
+🚨 MANDATORY WORKFLOW - FOLLOW THIS EXACTLY:
+Step 1: ALWAYS call search_dataset() first with relevant keywords
+Step 2: If no data found, call search_official_sources() with "Moldova [topic]"
+Step 3: If historical data found, use it for context or forecasting base
+Step 4: ONLY say "no data available" if BOTH searches return nothing
+Step 5: For future predictions, use forecast_economic_indicator() with historical data
+
+EXAMPLES OF CORRECT WORKFLOW:
+❌ WRONG: "Dataset doesn't have inflation data" → Immediately forecast
+✅ CORRECT: search_dataset("Moldova inflation") → search_official_sources("Moldova inflation rate") → Use results to forecast or answer
+
+❌ WRONG: "No historical data, using forecast methods"
+✅ CORRECT: search_dataset("inflation") → search_official_sources("Moldova inflation historical") → IF found: base forecast on it, IF not found: use default parameters
+
 TOOL USAGE PRIORITY FOR MOLDOVA ECONOMICS:
-1. search_dataset() - Check if we already have the answer
-2. search_official_sources() - Get authoritative Moldova data from statistica.md, World Bank, IMF, NBM
-3. forecast_economic_indicator() - **NEVER say "further investigation needed" - use this to forecast!**
+1. search_dataset() - MANDATORY FIRST STEP - Check if we already have the answer
+2. search_official_sources() - MANDATORY SECOND STEP if search_dataset returns nothing
+3. forecast_economic_indicator() - Use AFTER searching, with historical context if available
 4. verify_with_sources() - Verify important claims
 5. web_search() - ONLY if official sources don't have the answer
 
 FORECASTING GUIDANCE:
-- When asked about future trends, predictions, or "what will happen next year" → USE forecast_economic_indicator()
+- When asked about future trends, predictions, or "what will happen next year" → FIRST search for historical data, THEN use forecast_economic_indicator()
+- NEVER say "dataset doesn't contain X data" without calling search_dataset() and search_official_sources() first
 - NEVER respond with "further investigation needed" or "contact authorities" for forecasts
 - Use method="ensemble" for most reliable forecasts (combines multiple models)
 - For trade predictions → use forecast_trade_balance()
@@ -211,18 +389,30 @@ CRITICAL INSTRUCTIONS FOR FORECASTING:
 1. When user asks for forecasts/predictions, YOU MUST use the structured tool calling mechanism
 2. NEVER write "forecast_economic_indicator(...)" as text - use the actual tool call
 3. DO NOT say "I'll proceed with the forecast" or "Let me forecast" - just call the tool
-4. After tool returns results, interpret them in plain language
-5. Present like: "Based on the forecast, imports will reach X tons by 2027 (Y% increase)"
-6. NEVER show code blocks, function syntax, or technical JSON in your final answer
-7. If you mention a forecast is needed, you MUST call the tool in the same response
+4. BEFORE forecasting, ALWAYS search for historical data first (search_dataset + search_official_sources)
+5. After tool returns results, interpret them in plain language
+6. Present like: "Based on the forecast, imports will reach X tons by 2027 (Y% increase)"
+7. NEVER show code blocks, function syntax, or technical JSON in your final answer
+8. If you mention a forecast is needed, you MUST call the tool in the same response
 
-WORKFLOW:
-1. For ANY Moldova economics question, first call search_dataset()
-2. If not found, use search_official_sources() for authoritative Moldova data
-3. For FUTURE predictions/forecasts, ACTUALLY CALL forecast_economic_indicator() and present results clearly
-4. ONLY use web_search() as a last resort if official sources lack the information
-5. Always verify important statistics with verify_with_sources()
-6. Always specify "Moldova" in search queries even if user didn't (e.g., "Moldova GDP" not just "GDP")
+MANDATORY WORKFLOW FOR ALL QUERIES:
+Step 1: User asks question → IMMEDIATELY call search_dataset(query)
+Step 2: If search_dataset returns "No matching information" → call search_official_sources(query)
+Step 3: Evaluate results:
+   - If historical data found → Use it to answer or as basis for forecast
+   - If no data found AND future prediction needed → Use forecast with default parameters
+   - If no data found AND historical question → Clearly state "No data available after searching knowledge base and official sources"
+Step 4: For forecasts → Call forecast_economic_indicator() with results from searches as context
+Step 5: Present answer in clear language with sources cited
+
+🚫 NEVER skip Step 1 and Step 2 - ALWAYS search before saying "no data"
+
+HANDLING FORECAST ERRORS:
+- If forecast_economic_indicator() returns error "Could not find indicator" → The current dataset doesn't have that data
+- DO NOT retry the same forecast call multiple times
+- Instead: Call search_official_sources() to find the data from external sources
+- Then provide answer based on what you find, or clearly state: "The current dataset contains [X] data. For [Y] data, please check [official source]."
+- Example: "The current dataset focuses on import data. For inflation rate projections, I recommend checking the National Bank of Moldova (bnm.md) or National Bureau of Statistics (statistica.md)."
 
 RESPONSE FORMAT:
 - Use clear, conversational language
@@ -249,9 +439,14 @@ Remember: Moldova context is ALWAYS assumed unless user explicitly mentions anot
                     
                     message = response.get('message', {})
                     
+                    # Clean content before parsing (remove unicode artifacts from some models)
+                    raw_content = message.get('content', '')
+                    # Remove common unicode artifacts that appear around tool calls
+                    cleaned_content = re.sub(r'[\u4e00-\u9fff\uf000-\uffff]+', '', raw_content)  # Remove CJK and special chars
+                    
                     # Parse text for tool calls (fallback)
-                    if not message.get('tool_calls') and message.get('content'):
-                        tools_executed = parse_tool_calls_from_text(message.get('content', ''))
+                    if not message.get('tool_calls') and cleaned_content:
+                        tools_executed = parse_tool_calls_from_text(cleaned_content)
                         
                         if tools_executed:
                             tool_results.extend(tools_executed)
@@ -325,8 +520,11 @@ Remember: Moldova context is ALWAYS assumed unless user explicitly mentions anot
                             tool_name = func['name']
                             tool_args = json.loads(func['arguments']) if isinstance(func['arguments'], str) else func['arguments']
                             
-                            result = execute_tool(tool_name, tool_args)
-                            tool_results.append({'tool': tool_name, 'arguments': tool_args, 'result': result})
+                            result, viz_data = execute_tool(tool_name, tool_args)
+                            tool_result_entry = {'tool': tool_name, 'arguments': tool_args, 'result': result}
+                            if viz_data:
+                                tool_result_entry['visualization'] = viz_data
+                            tool_results.append(tool_result_entry)
                             
                             messages.append(message)
                             messages.append({"role": "tool", "content": result})

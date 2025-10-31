@@ -238,13 +238,14 @@ class EconomicForecaster:
 forecaster = EconomicForecaster()
 
 
-def forecast_economic_indicator(indicator: str, time_periods: int = 12, 
-                                method: str = "ensemble") -> str:
+def forecast_economic_indicator(indicator: str = None, query: str = None, 
+                                time_periods: int = 12, method: str = "ensemble") -> str:
     """
     Forecast future values of an economic indicator using historical data.
     
     Args:
         indicator: Name of the economic indicator (e.g., "GDP", "exports", "imports", "Value")
+        query: Alternative parameter name for indicator (for compatibility)
         time_periods: Number of periods ahead to forecast (default: 12 months)
         method: Forecasting method - "ensemble", "trend", "growth", "smooth", "moving_average"
     
@@ -260,6 +261,13 @@ def forecast_economic_indicator(indicator: str, time_periods: int = 12,
     
     Example: forecast_economic_indicator("exports", 6, "ensemble")
     """
+    # Handle both parameter names for compatibility
+    if query and not indicator:
+        indicator = query
+    
+    if not indicator:
+        return json.dumps({"error": "indicator parameter is required"})
+    
     try:
         from run import dataset_state
         
@@ -280,8 +288,13 @@ def forecast_economic_indicator(indicator: str, time_periods: int = 12,
         
         if value_col is None:
             return json.dumps({
-                "error": f"Could not find indicator '{indicator}' in dataset",
-                "available_columns": list(df.columns)
+                "error": f"Could not find indicator '{indicator}' in current dataset",
+                "available_columns": list(df.columns),
+                "suggestion": f"The current dataset contains import data only. For '{indicator}' data, try: 1) search_official_sources('Moldova {indicator}') to find authoritative data, or 2) Upload a dataset containing '{indicator}' column",
+                "next_steps": [
+                    f"search_official_sources('Moldova {indicator} historical data')",
+                    f"web_search('Moldova {indicator} statistics statistica.md')"
+                ]
             })
         
         # Extract time series data

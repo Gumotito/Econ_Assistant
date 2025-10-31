@@ -308,10 +308,41 @@ Examples:
             })
             .then(r => r.json())
             .then(data => {
+                // Check if answer contains chart URL
+                let answer = data.answer;
+                let chartUrl = null;
+                
+                // Extract chart URL from answer (format: /static/charts/filename.png)
+                const chartMatch = answer.match(/\/static\/charts\/[^\s)]+\.png/);
+                if (chartMatch) {
+                    chartUrl = chartMatch[0];
+                }
+                
+                // Also check tool_calls for visualization data
+                if (data.tool_calls) {
+                    data.tool_calls.forEach(tc => {
+                        try {
+                            const result = JSON.parse(tc.result);
+                            if (result.visualization && result.visualization.image_url) {
+                                chartUrl = result.visualization.image_url;
+                            }
+                        } catch(e) {}
+                    });
+                }
+                
                 let html = `<div class="response-box">
                     <strong>Question:</strong> ${data.question}<br><br>
-                    <strong>Answer:</strong> ${data.answer}
+                    <strong>Answer:</strong> ${answer}
                 </div>`;
+                
+                // Display chart if found
+                if (chartUrl) {
+                    html += `<div class="response-box" style="text-align: center; padding: 20px;">
+                        <strong>📊 Visualization</strong><br><br>
+                        <img src="${chartUrl}" alt="Chart" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <br><small style="color: #666;">Click to view full size in new tab: <a href="${chartUrl}" target="_blank">Open Chart</a></small>
+                    </div>`;
+                }
                 
                 // Display follow-up question
                 if (data.followup) {

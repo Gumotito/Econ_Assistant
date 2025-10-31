@@ -204,21 +204,21 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "forecast_economic_indicator",
-            "description": "Forecast future values of economic indicators using statistical models (linear trend, growth rate, exponential smoothing, ensemble). Use this to predict GDP, exports, imports, trade values, or any numeric indicator. ALWAYS use this instead of saying 'further investigation needed'.",
+            "description": "Forecast future values of economic indicators using statistical models (linear trend, growth rate, exponential smoothing, ensemble). Use this to predict GDP, exports, imports, inflation rate, trade values, or any numeric indicator. IMPORTANT: Call this AFTER searching for historical data with search_dataset() and search_official_sources().",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "indicator": {
                         "type": "string",
-                        "description": "Name of the indicator to forecast (e.g., 'GDP', 'exports', 'imports', 'Value')"
+                        "description": "Name of the indicator to forecast. Use exact column names like 'Value', 'GDP', 'exports', 'imports', or economic terms like 'inflation_rate', 'trade_balance'"
                     },
                     "time_periods": {
                         "type": "integer",
-                        "description": "Number of periods ahead to forecast (default: 12). For months, use 12 for 1 year."
+                        "description": "Number of periods ahead to forecast (default: 12). For 'next year' use 12 months, for '6 months' use 6."
                     },
                     "method": {
                         "type": "string",
-                        "description": "Forecasting method: 'ensemble' (recommended, combines multiple models), 'trend' (linear), 'growth' (CAGR), 'smooth' (exponential), 'moving_average'",
+                        "description": "Forecasting method: 'ensemble' (RECOMMENDED - combines all models), 'trend' (linear), 'growth' (CAGR), 'smooth' (exponential), 'moving_average'",
                         "enum": ["ensemble", "trend", "growth", "smooth", "moving_average"]
                     }
                 },
