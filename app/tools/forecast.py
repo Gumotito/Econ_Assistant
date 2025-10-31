@@ -4,6 +4,9 @@ import numpy as np
 from typing import Dict, Any, List, Tuple
 from datetime import datetime
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 class EconomicForecaster:
     """Economic forecasting using time series analysis and economic models"""
@@ -242,6 +245,7 @@ def forecast_economic_indicator(indicator: str = None, query: str = None,
                                 time_periods: int = 12, method: str = "ensemble") -> str:
     """
     Forecast future values of an economic indicator using historical data.
+    With intelligent caching to improve performance on repeated queries.
     
     Args:
         indicator: Name of the economic indicator (e.g., "GDP", "exports", "imports", "Value")
@@ -270,6 +274,8 @@ def forecast_economic_indicator(indicator: str = None, query: str = None,
     
     try:
         from run import dataset_state
+        from app.services.cache import get_forecast_cache
+        import hashlib
         
         if dataset_state.dataset is None or dataset_state.dataset.empty:
             return json.dumps({
@@ -278,6 +284,17 @@ def forecast_economic_indicator(indicator: str = None, query: str = None,
             })
         
         df = dataset_state.dataset
+        
+        # Generate cache key based on data hash
+        data_str = df.to_json(orient='records')
+        data_hash = hashlib.md5(data_str.encode()).hexdigest()[:8]
+        
+        # Check cache
+        cache = get_forecast_cache()
+        cached_result = cache.get_forecast(indicator, time_periods, method, data_hash)
+        if cached_result:
+            logger.info(f"Cache hit for forecast: {indicator} ({method}, {time_periods} periods)")
+            return cached_result
         
         # Find relevant column
         value_col = None
@@ -343,7 +360,13 @@ def forecast_economic_indicator(indicator: str = None, query: str = None,
                 f"in the next period"
             )
         
-        return json.dumps(result, indent=2)
+        result_json = json.dumps(result, indent=2)
+        
+        # Cache the result
+        cache.set_forecast(indicator, time_periods, method, data_hash, result_json)
+        logger.info(f"Cached forecast result: {indicator} ({method}, {time_periods} periods)")
+        
+        return result_json
         
     except Exception as e:
         return json.dumps({

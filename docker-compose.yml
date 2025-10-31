@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # Ollama service for LLM inference
+  ollama:
+    image: ollama/ollama:latest
+    container_name: econ-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Main application
+  econ_assistant:
+    build: .
+    container_name: econ-assistant
+    ports:
+      - "5000:5000"
+    environment:
+      # Flask
+      - FLASK_ENV=production
+      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
+      - DEBUG=false
+      
+      # Ollama connection
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5:14b
+      
+      # LangSmith tracing
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-econ-assistant}
+      
+      # Database
+      - CHROMA_PERSIST_DIR=/app/chroma_db
+      
+      # Initial dataset
+      - INITIAL_CSV=test_moldova_imports_2025.csv
+    volumes:
+      - ./chroma_db:/app/chroma_db
+      - ./logs:/app/logs
+      - ./static/charts:/app/static/charts
+      - ./uploads:/app/uploads
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  ollama_data:
+    driver: local
+
+networks:
+  default:
+    name: econ-network

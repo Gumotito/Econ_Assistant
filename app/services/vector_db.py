@@ -4,27 +4,59 @@ from chromadb.utils import embedding_functions
 from typing import List, Dict, Any
 import hashlib
 import pandas as pd
+import logging
+
+logger = logging.getLogger(__name__)
 
 class VectorDBService:
     def __init__(self, persist_dir: str = "chroma_db"):
         self.persist_dir = persist_dir
         self.client = None
         self.collection = None
+        self.embedding_fn = None
         
     def initialize(self):
         """Initialize ChromaDB with persistence"""
-        self.client = chromadb.PersistentClient(path=self.persist_dir)
-        
-        embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
-        )
-        
-        self.collection = self.client.get_or_create_collection(
-            name="dataset_knowledge",
-            embedding_function=embedding_fn
-        )
-        
-        print(f"✓ Vector DB initialized with {self.collection.count()} documents")
+        try:
+            self.client = chromadb.PersistentClient(path=self.persist_dir)
+            
+            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name="all-MiniLM-L6-v2"
+            )
+            
+            self.collection = self.client.get_or_create_collection(
+                name="dataset_knowledge",
+                embedding_function=self.embedding_fn
+            )
+            
+            print(f"✓ Vector DB initialized with {self.collection.count()} documents")
+        except Exception as e:
+            logger.error(f"Failed to initialize ChromaDB: {e}")
+            raise
+    
+    def health_check(self) -> bool:
+        """Check if ChromaDB connection is healthy"""
+        try:
+            if not self.collection:
+                return False
+            
+            # Simple operation to verify connectivity
+            self.collection.count()
+            return True
+        except Exception as e:
+            logger.error(f"ChromaDB health check failed: {e}")
+            return False
+    
+    def reconnect(self):
+        """Attempt to reconnect to ChromaDB"""
+        logger.info("Attempting to reconnect to ChromaDB...")
+        try:
+            self.initialize()
+            logger.info("ChromaDB reconnection successful")
+            return True
+        except Exception as e:
+            logger.error(f"ChromaDB reconnection failed: {e}")
+            return False
         
     def search(self, query: str, n_results: int = 5, min_trust: float = 0.0) -> Dict[str, Any]:
         """
@@ -39,7 +71,15 @@ class VectorDBService:
             Dict with 'documents', 'metadatas', 'distances' keys
         """
         if not self.collection:
+            logger.warning("ChromaDB collection not initialized")
             return {'documents': [[]], 'metadatas': [[]], 'distances': [[]]}
+        
+        # Try to reconnect if unhealthy
+        if not self.health_check():
+            logger.warning("ChromaDB unhealthy, attempting reconnect...")
+            if not self.reconnect():
+                logger.error("ChromaDB reconnection failed, returning empty results")
+                return {'documents': [[]], 'metadatas': [[]], 'distances': [[]]}
         
         # Get more results initially for filtering
         fetch_count = n_results * 3 if min_trust > 0 else n_results

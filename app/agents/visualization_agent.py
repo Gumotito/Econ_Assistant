@@ -1,4 +1,4 @@
-"""Data Visualization Agent - Automatically generates charts from numeric data"""
+"""Data Visualization Agent - Automatically generates charts from numeric data with cleanup"""
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for server
@@ -6,9 +6,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import base64
 from io import BytesIO
+from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Set style
 sns.set_style("whitegrid")
@@ -19,11 +23,70 @@ class DataVisualizationAgent:
     """
     Automatically detects when data can be visualized and generates appropriate charts.
     Supports: line charts, bar charts, forecasts, comparisons, trends.
+    Includes automatic cleanup to prevent disk space exhaustion.
     """
     
-    def __init__(self, output_dir="static/charts"):
-        self.output_dir = output_dir
-        os.makedirs(output_dir, exist_ok=True)
+    def __init__(self, output_dir="static/charts", max_charts=100, max_age_days=7):
+        """
+        Initialize visualization agent with resource limits.
+        
+        Args:
+            output_dir: Directory to save charts
+            max_charts: Maximum number of charts to keep
+            max_age_days: Maximum age of charts in days
+        """
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.max_charts = max_charts
+        self.max_age_days = max_age_days
+        
+        # Run cleanup on initialization
+        self.cleanup_old_charts()
+    
+    def cleanup_old_charts(self):
+        """Remove old charts to prevent disk fill"""
+        try:
+            if not self.output_dir.exists():
+                return
+            
+            charts = list(self.output_dir.glob('*.png'))
+            
+            if not charts:
+                return
+            
+            removed_count = 0
+            
+            # Remove by age
+            cutoff_time = datetime.now() - timedelta(days=self.max_age_days)
+            for chart in charts:
+                try:
+                    if datetime.fromtimestamp(chart.stat().st_mtime) < cutoff_time:
+                        chart.unlink()
+                        removed_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to remove old chart {chart.name}: {e}")
+            
+            # Refresh list after age-based removal
+            charts = list(self.output_dir.glob('*.png'))
+            
+            # Remove by count (keep only most recent max_charts)
+            if len(charts) > self.max_charts:
+                # Sort by modification time, oldest first
+                charts_sorted = sorted(charts, key=lambda p: p.stat().st_mtime)
+                excess_charts = charts_sorted[:len(charts) - self.max_charts]
+                
+                for chart in excess_charts:
+                    try:
+                        chart.unlink()
+                        removed_count += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to remove excess chart {chart.name}: {e}")
+            
+            if removed_count > 0:
+                logger.info(f"Chart cleanup: removed {removed_count} old charts")
+                
+        except Exception as e:
+            logger.error(f"Chart cleanup failed: {e}")
         
     def should_visualize(self, data: dict) -> bool:
         """Determine if data is suitable for visualization"""

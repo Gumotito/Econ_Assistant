@@ -110,7 +110,8 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
             
             return result_json, None
             
-        except:
+        except Exception as e:
+            logger.error(f"Error formatting forecast result: {e}")
             return result_json, None
     
     def execute_tool(tool_name: str, arguments: dict) -> tuple:
@@ -176,8 +177,9 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
                         result_data['helpful_message'] = f"The current dataset contains import data only. For {indicator}, I've provided guidance on where to find authoritative Moldova data. {combined_info}"
                         
                         return json.dumps(result_data), None
-                except:
-                    pass  # If not JSON or other error, continue normally
+                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                    logger.debug(f"Auto-recovery not applicable: {e}")
+                    pass  # Continue with normal forecast formatting
                 
                 # Format successful forecast results
                 formatted_text, updated_json = format_forecast_result(result, tool_name)
@@ -187,8 +189,8 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
                     try:
                         data = json.loads(updated_json)
                         viz_data = data.get('visualization')
-                    except:
-                        pass
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.warning(f"Could not extract visualization data: {e}")
                 return formatted_text, viz_data
             
             return result, None
@@ -269,8 +271,8 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
                         data = json.loads(updated_json)
                         if 'visualization' in data:
                             tool_entry['visualization'] = data['visualization']
-                    except:
-                        pass
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.debug(f"No visualization in forecast result: {e}")
                 tools_executed.append(tool_entry)
         
         # Forecast trade balance
@@ -289,8 +291,8 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
                     data = json.loads(updated_json)
                     if 'visualization' in data:
                         tool_entry['visualization'] = data['visualization']
-                except:
-                    pass
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.debug(f"No visualization in trade forecast result: {e}")
             tools_executed.append(tool_entry)
         
         return tools_executed
@@ -579,8 +581,8 @@ Remember: Moldova context is ALWAYS assumed unless user explicitly mentions anot
                         )
                         
                         return jsonify({'error': 'Response blocked by safety filter'}), 400
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.error(f"Unexpected error in guardrail validation: {e}")
             
             # ANALYTICS: Log fallback "Could not generate answer"
             query_time = time.time() - query_start_time
@@ -642,15 +644,76 @@ Remember: Moldova context is ALWAYS assumed unless user explicitly mentions anot
             'recent_queries': analytics.get_recent_queries(limit=limit)
         })
     
+    def validate_uploaded_file(file) -> tuple[bool, str]:
+        """
+        Comprehensive file validation for security.
+        
+        Returns:
+            (is_valid, error_message)
+        """
+        MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+        ALLOWED_EXTENSIONS = {'.csv', '.xlsx', '.xls'}
+        
+        # Check filename
+        if not file.filename:
+            return False, "No filename provided"
+        
+        # Check extension
+        import os
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            return False, f"File type {ext} not allowed. Only CSV, XLSX, XLS supported."
+        
+        # Read file into memory for validation
+        file_content = file.read()
+        file.seek(0)  # Reset for later use
+        
+        # Check file size
+        file_size = len(file_content)
+        if file_size > MAX_FILE_SIZE:
+            return False, f"File too large ({file_size/1024/1024:.1f}MB). Maximum 10MB allowed."
+        
+        if file_size < 10:  # Suspiciously small
+            return False, "File appears to be empty or corrupted"
+        
+        # Validate magic numbers (file signatures)
+        if ext == '.xlsx':
+            # XLSX files are ZIP archives, start with PK
+            if not file_content[:2] == b'PK':
+                return False, "Invalid XLSX file signature. File may be corrupted or wrong type."
+        
+        elif ext == '.xls':
+            # Old Excel format starts with D0 CF
+            if not file_content[:2] == b'\xD0\xCF':
+                return False, "Invalid XLS file signature. File may be corrupted or wrong type."
+        
+        elif ext == '.csv':
+            # CSV should be valid text - try decoding first 1KB
+            try:
+                file_content[:1024].decode('utf-8')
+            except UnicodeDecodeError:
+                try:
+                    file_content[:1024].decode('latin-1')
+                except UnicodeDecodeError:
+                    return False, "CSV file encoding not supported. Please use UTF-8 or Latin-1."
+        
+        return True, ""
+    
     @api_bp.route('/dataset/upload', methods=['POST'])
     def upload_dataset():
-        """Upload a new dataset (CSV/Excel) with curation evaluation"""
+        """Upload a new dataset (CSV/Excel) with comprehensive security validation and curation evaluation"""
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
         
         file = request.files['file']
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
+        
+        # SECURITY: Validate file thoroughly
+        is_valid, error_msg = validate_uploaded_file(file)
+        if not is_valid:
+            logger.warning(f"File upload validation failed: {error_msg}")
+            return jsonify({'error': error_msg}), 400
         
         # Get metadata
         name = request.form.get('name')
@@ -662,9 +725,9 @@ Remember: Moldova context is ALWAYS assumed unless user explicitly mentions anot
         if not name:
             return jsonify({'error': 'Dataset name required'}), 400
         
-        # Validate file type
-        if not file.filename.lower().endswith(('.csv', '.xlsx', '.xls')):
-            return jsonify({'error': 'Only CSV and Excel files supported'}), 400
+        # Validate name (prevent path traversal)
+        if not name.replace('_', '').replace('-', '').replace(' ', '').isalnum():
+            return jsonify({'error': 'Dataset name contains invalid characters'}), 400
         
         try:
             # Save temporarily

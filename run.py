@@ -145,10 +145,53 @@ def internal_error(error):
     from flask import jsonify
     return jsonify({'error': 'Internal server error'}), 500
 
+def validate_production_config():
+    """Validate critical configuration before starting"""
+    import sys
+    errors = []
+    warnings = []
+    
+    # Critical checks
+    if Config.SECRET_KEY == 'dev-secret-key-change-in-production':
+        if not Config.DEBUG:
+            errors.append("SECRET_KEY must be changed for production deployment")
+        else:
+            warnings.append("SECRET_KEY using default dev value (OK for development)")
+    
+    if Config.LANGCHAIN_TRACING_V2 == 'true' and not Config.LANGCHAIN_API_KEY:
+        warnings.append("LANGCHAIN_TRACING_V2 enabled but LANGCHAIN_API_KEY missing - tracing will fail")
+    
+    # Environment-specific checks
+    if not Config.DEBUG:
+        if not os.getenv('OLLAMA_HOST'):
+            warnings.append("OLLAMA_HOST not set - using default localhost:11434")
+        
+        if Config.RATELIMIT_STORAGE_URL == 'memory://':
+            warnings.append("Using in-memory rate limiting - not suitable for multi-worker deployments")
+    
+    # Display results
+    if errors:
+        print("\n" + "="*60)
+        print("❌ CONFIGURATION ERRORS - Cannot start")
+        print("="*60)
+        for err in errors:
+            print(f"  ✗ {err}")
+        print("\nFix these issues and try again.")
+        print("="*60 + "\n")
+        sys.exit(1)
+    
+    if warnings:
+        print("\n⚠️  Configuration Warnings:")
+        for warn in warnings:
+            print(f"  • {warn}")
+
 if __name__ == '__main__':
     print("\n" + "="*60)
     print("🤖 Econ Assistant - Self-Learning Dataset Expert")
     print("="*60)
+    
+    # Validate configuration
+    validate_production_config()
     
     # Check LangSmith
     if Config.LANGCHAIN_API_KEY:
