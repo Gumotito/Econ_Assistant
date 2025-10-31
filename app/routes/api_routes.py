@@ -4,6 +4,8 @@ import json
 import re
 import logging
 import time
+import pandas as pd
+from datetime import datetime
 from app.services.guardrails import get_guardrails, GuardrailViolation
 from app.services.analytics import get_analytics
 
@@ -19,12 +21,14 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
                           forecast_trade_balance)
     from app.tools.engagement import suggest_followup, set_llm_service
     from app.agents import get_data_agent
+    from app.agents.curator_agent import get_curator_agent
     from app.tools.verify import set_data_agent
     
-    # Initialize guardrails, analytics, and data agent
+    # Initialize guardrails, analytics, data agent, and curator
     guardrails = get_guardrails()
     analytics = get_analytics()
     data_agent = get_data_agent(db_service)
+    curator_agent = get_curator_agent(db_service, llm_service)
     
     # Set dependencies for tools
     set_llm_service(llm_service)
@@ -442,7 +446,7 @@ Remember: Moldova context is ALWAYS assumed unless user explicitly mentions anot
     
     @api_bp.route('/dataset/upload', methods=['POST'])
     def upload_dataset():
-        """Upload a new dataset (CSV/Excel)"""
+        """Upload a new dataset (CSV/Excel) with curation evaluation"""
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
         
@@ -453,7 +457,9 @@ Remember: Moldova context is ALWAYS assumed unless user explicitly mentions anot
         # Get metadata
         name = request.form.get('name')
         description = request.form.get('description', '')
+        source = request.form.get('source', 'User upload')
         trust_score = request.form.get('trust_score', type=float)
+        add_to_core = request.form.get('add_to_core', 'auto')  # 'auto', 'yes', 'no'
         
         if not name:
             return jsonify({'error': 'Dataset name required'}), 400
@@ -473,7 +479,40 @@ Remember: Moldova context is ALWAYS assumed unless user explicitly mentions anot
             filepath = os.path.join(temp_dir, filename)
             file.save(filepath)
             
-            # Upload to DataAgent
+            # Load dataset for evaluation
+            if filepath.endswith('.csv'):
+                df = pd.read_csv(filepath)
+            else:
+                df = pd.read_excel(filepath)
+            
+            # CURATION: Evaluate dataset quality and relevance
+            metadata = {
+                'filename': filename,
+                'source': source,
+                'description': description,
+                'upload_date': datetime.now().isoformat()
+            }
+            
+            evaluation = curator_agent.evaluate_dataset(df, metadata)
+            evaluation_report = curator_agent.generate_report(evaluation)
+            
+            logger.info(f"Dataset evaluation:\n{evaluation_report}")
+            
+            # Decide whether to add to core based on evaluation
+            should_add_to_core = False
+            
+            if add_to_core == 'yes':
+                should_add_to_core = True
+                logger.info(f"User forced add to core: {name}")
+            elif add_to_core == 'auto':
+                # Auto-decide based on curator recommendation
+                if evaluation['recommendation'] in ['ACCEPT', 'ACCEPT_WITH_REVIEW']:
+                    should_add_to_core = True
+                    logger.info(f"Auto-accepted to core (score: {evaluation['overall_score']}): {name}")
+                else:
+                    logger.info(f"Not adding to core (score: {evaluation['overall_score']}): {name}")
+            
+            # Upload to DataAgent (user-specific or core)
             result = data_agent.upload_dataset(
                 file_path=filepath,
                 name=name,
@@ -481,14 +520,46 @@ Remember: Moldova context is ALWAYS assumed unless user explicitly mentions anot
                 trust_score=trust_score
             )
             
+            # If approved, also add to core knowledge base with higher trust score
+            if should_add_to_core and evaluation['recommendation'] == 'ACCEPT':
+                # Index with high trust score for core knowledge
+                core_trust_score = 0.85 if evaluation['details']['trust']['is_trusted_source'] else 0.75
+                
+                # Add each row as a document to core knowledge base
+                rows_indexed = 0
+                for idx, row in df.iterrows():
+                    row_text = ' | '.join([f"{col}: {val}" for col, val in row.items() if pd.notna(val)])
+                    
+                    db_service.add_document(
+                        text=row_text,
+                        metadata={
+                            'source': 'curated_dataset',
+                            'dataset_name': name,
+                            'trust_score': core_trust_score,
+                            'row_index': idx,
+                            'added_to_core': True
+                        }
+                    )
+                    rows_indexed += 1
+                
+                logger.info(f"Added {rows_indexed} rows from {name} to core knowledge base")
+            
             # Clean up temp file
             os.remove(filepath)
             
-            logger.info(f"Dataset uploaded: {name}")
             return jsonify({
                 'success': True,
                 'message': result,
-                'dataset_name': name
+                'dataset_name': name,
+                'evaluation': {
+                    'recommendation': evaluation['recommendation'],
+                    'overall_score': evaluation['overall_score'],
+                    'scores': evaluation['scores'],
+                    'action': evaluation['action'],
+                    'reason': evaluation['reason'],
+                    'added_to_core': should_add_to_core
+                },
+                'report': evaluation_report
             })
             
         except Exception as e:
