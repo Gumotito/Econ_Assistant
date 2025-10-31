@@ -355,9 +355,14 @@ Examples:
                 if (data.tool_calls && data.tool_calls.length > 0) {
                     html += '<div class="response-box"><strong>🛠️ Tools Used:</strong><br>';
                     data.tool_calls.forEach(tc => {
+                        // Handle result that might be a string or object
+                        let resultText = tc.result;
+                        if (typeof resultText === 'object') {
+                            resultText = JSON.stringify(resultText);
+                        }
                         html += `<div class="tool-call">
                             <span class="tool-name">${tc.tool}</span>(${JSON.stringify(tc.arguments)})<br>
-                            <small>→ ${tc.result.substring(0, 150)}${tc.result.length > 150 ? '...' : ''}</small>
+                            <small>→ ${resultText.substring(0, 150)}${resultText.length > 150 ? '...' : ''}</small>
                         </div>`;
                     });
                     html += '</div>';

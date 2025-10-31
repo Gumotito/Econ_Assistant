@@ -121,7 +121,20 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
             tuple: (result_string, visualization_data or None)
         """
         if tool_name in TOOL_MAP:
-            result = TOOL_MAP[tool_name](**arguments)
+            try:
+                result = TOOL_MAP[tool_name](**arguments)
+            except TypeError as e:
+                # Handle tool argument mismatch - likely LLM called wrong tool
+                error_msg = str(e)
+                if "unexpected keyword argument" in error_msg:
+                    logger.error(f"Tool argument error: {tool_name} called with {arguments}")
+                    
+                    # Provide helpful error message
+                    if tool_name == "calculate" and "indicator" in arguments:
+                        return "ERROR: You called calculate() but meant to call forecast_economic_indicator(). The calculate() tool is for math expressions like '2+2', while forecast_economic_indicator() is for economic forecasts. Please call forecast_economic_indicator() with the indicator parameter instead.", None
+                    
+                    return f"ERROR: Tool '{tool_name}' was called with incorrect arguments {arguments}. Please check the tool definition and call it with the correct parameters. Error: {error_msg}", None
+                raise  # Re-raise if it's a different TypeError
             
             # INTELLIGENT AUTO-RECOVERY: If forecast fails due to missing data, automatically search for it
             if tool_name in ["forecast_economic_indicator", "forecast_trade_balance"]:
@@ -139,6 +152,14 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
                         
                         # Also try web search as backup
                         web_result = web_search(f"Moldova {indicator} 2024 2025 statistica.md")
+                        
+                        # Save the learned information FIRST
+                        combined_info = f"Official sources for {indicator}: {search_result}\n\nAdditional context: {web_result}"
+                        add_learned_info(combined_info, f"Moldova {indicator}")
+                        
+                        # Now re-query the knowledge base with the newly learned info
+                        logger.info(f"✅ External data found and saved. Re-searching knowledge base for '{indicator}'...")
+                        kb_result = search_dataset(f"Moldova {indicator}")
                         
                         # Check if searches returned useful data
                         search_empty = (len(search_result) < 50 or "No results" in search_result) and \
@@ -164,19 +185,11 @@ def create_api_blueprint(llm_service, db_service, get_dataset, get_dataset_info)
                             if not guidance_text:
                                 guidance_text = f"For {indicator} data, check: National Bureau of Statistics (statistica.md), National Bank of Moldova (bnm.md), World Bank Moldova, or IMF Moldova reports."
                             
-                            combined_info = f"Context for {indicator}: {guidance_text}"
+                            # Return informative message with the guidance for user
+                            return f"📚 AUTO-RECOVERY: External search completed.\n\nContext found: {guidance_text}\n\nKnowledge base contains: {kb_result[:200]}\n\n⚠️ CRITICAL INSTRUCTION: The dataset doesn't have numerical time-series data for {indicator} forecasting. However, you MUST provide an informed qualitative analysis based on the context above. DO NOT tell users to 'check external sources' - that's lazy. Instead:\n1. Summarize the key trend from the context (e.g., '3-5% growth historically')\n2. Provide a reasonable projection for next year based on that trend\n3. Explain your reasoning\n4. Give a specific answer, not a referral.", None
                         else:
-                            # Save the learned information for future
-                            combined_info = f"Official sources search for {indicator}: {search_result}\n\nWeb search results: {web_result}"
-                        
-                        add_learned_info(combined_info, f"Moldova {indicator}")
-                        
-                        # Return enhanced error with guidance
-                        result_data['auto_search_performed'] = True
-                        result_data['guidance'] = combined_info
-                        result_data['helpful_message'] = f"The current dataset contains import data only. For {indicator}, I've provided guidance on where to find authoritative Moldova data. {combined_info}"
-                        
-                        return json.dumps(result_data), None
+                            # Data found! Return it for the LLM to use - be VERY explicit
+                            return f"✅ AUTO-RECOVERY SUCCESSFUL!\n\nExternal data found and saved to knowledge base for Moldova {indicator}.\n\nKnowledge base now contains:\n{kb_result[:500]}\n\nAdditional web context:\n{combined_info[:300]}\n\n⚠️ CRITICAL INSTRUCTION FOR LLM:\n- The dataset still lacks numerical time-series data for forecasting charts\n- You CANNOT generate a forecast chart without historical numerical data\n- DO NOT mention checking external sources like 'statistica.md' or 'World Bank' - that's what I just did!\n- DO NOT create fake chart references\n- MUST provide qualitative analysis using the information above\n- Extract specific numbers/trends from the text above and present them\n- Give a projection based on the context provided\n- Be specific and authoritative in your answer\n\nExample good response: 'Based on recent data, Moldova's {indicator} has shown X trend. Historical analysis indicates Y. For next year, we can expect Z based on current conditions.'\n\nNOW ANSWER THE USER'S QUESTION USING THIS INFORMATION!", None
                 except (json.JSONDecodeError, KeyError, TypeError) as e:
                     logger.debug(f"Auto-recovery not applicable: {e}")
                     pass  # Continue with normal forecast formatting
@@ -409,12 +422,41 @@ Step 5: Present answer in clear language with sources cited
 
 🚫 NEVER skip Step 1 and Step 2 - ALWAYS search before saying "no data"
 
-HANDLING FORECAST ERRORS:
-- If forecast_economic_indicator() returns error "Could not find indicator" → The current dataset doesn't have that data
-- DO NOT retry the same forecast call multiple times
-- Instead: Call search_official_sources() to find the data from external sources
-- Then provide answer based on what you find, or clearly state: "The current dataset contains [X] data. For [Y] data, please check [official source]."
-- Example: "The current dataset focuses on import data. For inflation rate projections, I recommend checking the National Bank of Moldova (bnm.md) or National Bureau of Statistics (statistica.md)."
+HANDLING AUTO-RECOVERY FROM EXTERNAL SOURCES:
+🔄 When forecast_economic_indicator() triggers auto-recovery:
+- External sources are AUTOMATICALLY searched (search_official_sources + web_search)
+- Data is SAVED to knowledge base immediately
+- Tool result will contain "AUTO-RECOVERY SUCCESSFUL - DATA FOUND!" message
+- This message includes the actual found data from searches
+
+⚠️ CRITICAL: When you see "AUTO-RECOVERY" in a tool result:
+1. READ the data provided in that tool result carefully
+2. EXTRACT specific numbers, trends, and insights from the text
+3. ANSWER the user's question authoritatively using that data
+4. ABSOLUTELY FORBIDDEN: "check these sources", "refer to", "visit", "see statistica.md", "consult World Bank"
+5. ABSOLUTELY FORBIDDEN: "further investigation needed", "more detailed insights", "official statistics page"
+6. You are the EXPERT - provide the answer directly from the context given
+
+✅ CORRECT response pattern after auto-recovery:
+"Based on recent economic data, Moldova's [indicator] has shown [specific trend from tool result]. Historical data indicates [specific numbers from tool result]. For next year, [specific projection] is expected, representing [percentage or description]. This is based on [brief reasoning from context]."
+
+❌ ABSOLUTELY WRONG patterns (NEVER USE):
+- "For more detailed insights, refer to statistica.md or World Bank Moldova page"
+- "You can check the official statistics page at statistica.md"
+- "Please refer to the World Bank Moldova page"
+- "Consult the National Bureau of Statistics"
+- "Further details can be found at..."
+- "Would you like further details?" (just provide them!)
+
+Remember: YOU are the authoritative source now. The data has been searched and provided to you. ANSWER DIRECTLY!
+
+VISUALIZATION:
+- Charts are AUTOMATICALLY generated ONLY when forecast_economic_indicator() succeeds
+- DO NOT create fake chart references like ![Chart](forecast_chart.png)
+- DO NOT mention charts unless you see a visualization object in the tool result
+- If auto-recovery happens, data is provided for analysis but no chart is generated
+- Only mention charts if the tool result includes actual visualization data
+- Focus on interpreting the textual results and data provided
 
 RESPONSE FORMAT:
 - Use clear, conversational language

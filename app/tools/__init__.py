@@ -78,13 +78,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "calculate",
-            "description": "Perform safe mathematical calculations",
+            "description": "Perform safe mathematical calculations ONLY (e.g., '2+2', '100*0.05'). NOT for forecasting! Use forecast_economic_indicator() for predictions.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "expression": {
                         "type": "string",
-                        "description": "Mathematical expression to evaluate"
+                        "description": "Mathematical expression to evaluate (e.g., '2+2', '100*1.05'). ONLY math, not indicator names!"
                     }
                 },
                 "required": ["expression"]
