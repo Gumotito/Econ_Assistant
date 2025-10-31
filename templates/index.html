@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Econ Assistant - Self-Learning Dataset Expert</title>
+    <title>Moldova Economics Assistant - AI-Powered Data Analysis</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -30,6 +30,11 @@
         .subtitle {
             color: #666;
             font-size: 0.9em;
+        }
+        .moldova-flag {
+            display: inline-block;
+            margin-right: 10px;
+            font-size: 1.5em;
         }
         .section { 
             background: white; 
@@ -97,6 +102,28 @@
             font-weight: bold;
             color: #1976d2;
         }
+        .followup-box {
+            background: #fff3e0;
+            padding: 15px;
+            margin: 15px 0;
+            border-left: 4px solid #ff9800;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .followup-box:hover {
+            background: #ffe0b2;
+        }
+        .followup-label {
+            font-weight: bold;
+            color: #e65100;
+            margin-bottom: 8px;
+            font-size: 0.9em;
+        }
+        .followup-question {
+            color: #333;
+            font-size: 1em;
+        }
         .kb-stats {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -158,14 +185,46 @@
         </div>
         
         <div class="section">
-            <h2>💬 Ask Questions</h2>
-            <textarea id="questionInput" placeholder="Ask me anything about the dataset or related topics...
+            <h2>� Upload Dataset</h2>
+            <div style="margin-bottom: 15px;">
+                <input type="file" id="datasetFile" accept=".csv,.xlsx,.xls" style="margin-bottom: 10px;">
+                <div style="margin: 10px 0;">
+                    <input type="text" id="datasetName" placeholder="Dataset name (required)" 
+                           style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px; margin-bottom: 10px;">
+                    <textarea id="datasetDescription" placeholder="Description (optional)" rows="2" 
+                              style="margin-bottom: 10px;"></textarea>
+                    <select id="trustScoreSelect" style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px;">
+                        <option value="">Auto-assign trust score (0.7 - User provided)</option>
+                        <option value="0.9">High Trust (0.9)</option>
+                        <option value="0.8">Medium-High Trust (0.8)</option>
+                        <option value="0.7">Medium Trust (0.7 - default)</option>
+                        <option value="0.6">Lower Trust (0.6)</option>
+                    </select>
+                </div>
+                <button onclick="uploadDataset()" id="uploadBtn">Upload Dataset</button>
+                <button onclick="listDatasets()" style="margin-left: 10px;">View Datasets</button>
+            </div>
+            <div id="uploadResponse"></div>
+            <div id="datasetList" class="response-box" style="display:none;"></div>
+        </div>
+        
+        <div class="section">
+            <h2> Ask Questions (Moldova Economics Focus)</h2>
+            <p style="color: #666; margin-bottom: 15px; font-size: 0.9em;">
+                🇲🇩 All questions automatically assume <strong>Moldova</strong> context unless you specify another country.
+            </p>
+            <textarea id="questionInput" placeholder="Ask about Moldova's economy (Moldova context is automatic)...
 
 Examples:
-• What's the average tariff rate?
-• Which country exports the most to Moldova?
-• What is Moldova's GDP in 2025?
-• Calculate the total import value from Germany" rows="5"></textarea>
+• What is the GDP? (assumes Moldova)
+• Which country exports the most to us?
+• What is our inflation rate in 2025?
+• Forecast exports for next 6 months 🔮 NEW!
+• Predict trade balance for 2026 🔮 NEW!
+• Calculate the total import value from Germany
+• Compare our exports to Romania
+• Search official sources for trade statistics
+• Verify: Moldova GDP 2023 was $15.5B" rows="5"></textarea>
             <button onclick="askQuestion()" id="askBtn">Ask Agent</button>
             <div id="queryResponse"></div>
         </div>
@@ -254,6 +313,14 @@ Examples:
                     <strong>Answer:</strong> ${data.answer}
                 </div>`;
                 
+                // Display follow-up question
+                if (data.followup) {
+                    html += `<div class="followup-box" onclick="askFollowup('${data.followup.replace(/'/g, "\\'")}')">
+                        <div class="followup-label">💡 Suggested Follow-up:</div>
+                        <div class="followup-question">${data.followup}</div>
+                    </div>`;
+                }
+                
                 if (data.tool_calls && data.tool_calls.length > 0) {
                     html += '<div class="response-box"><strong>🛠️ Tools Used:</strong><br>';
                     data.tool_calls.forEach(tc => {
@@ -279,6 +346,110 @@ Examples:
                 btn.disabled = false;
                 btn.innerHTML = 'Ask Agent';
             });
+        }
+        
+        // Upload dataset
+        function uploadDataset() {
+            const fileInput = document.getElementById('datasetFile');
+            const name = document.getElementById('datasetName').value;
+            const description = document.getElementById('datasetDescription').value;
+            const trustScore = document.getElementById('trustScoreSelect').value;
+            const responseDiv = document.getElementById('uploadResponse');
+            const btn = document.getElementById('uploadBtn');
+            
+            if (!fileInput.files[0]) {
+                responseDiv.innerHTML = '<div class="response-box" style="border-left-color: #f44336;"><strong>Error:</strong> Please select a file</div>';
+                return;
+            }
+            if (!name) {
+                responseDiv.innerHTML = '<div class="response-box" style="border-left-color: #f44336;"><strong>Error:</strong> Dataset name required</div>';
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('name', name);
+            if (description) formData.append('description', description);
+            if (trustScore) formData.append('trust_score', trustScore);
+            
+            btn.disabled = true;
+            btn.innerHTML = 'Uploading<span class="loading"></span>';
+            responseDiv.innerHTML = '<em>Uploading and indexing dataset...</em>';
+            
+            fetch('/api/dataset/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    responseDiv.innerHTML = `<div class="response-box" style="border-left-color: #4CAF50;">
+                        <strong style="color: #4CAF50;">✓ Success:</strong> ${data.message}
+                    </div>`;
+                    // Clear form
+                    fileInput.value = '';
+                    document.getElementById('datasetName').value = '';
+                    document.getElementById('datasetDescription').value = '';
+                    document.getElementById('trustScoreSelect').value = '';
+                    // Refresh stats
+                    loadKnowledgeBaseInfo();
+                } else {
+                    responseDiv.innerHTML = `<div class="response-box" style="border-left-color: #f44336;">
+                        <strong style="color: #f44336;">Error:</strong> ${data.error}
+                    </div>`;
+                }
+            })
+            .catch(e => {
+                responseDiv.innerHTML = `<div class="response-box" style="border-left-color: #f44336;">
+                    <strong style="color: #f44336;">Error:</strong> ${e}
+                </div>`;
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = 'Upload Dataset';
+            });
+        }
+        
+        // List datasets
+        function listDatasets() {
+            const div = document.getElementById('datasetList');
+            
+            if (div.style.display === 'none') {
+                fetch('/api/dataset/list')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.datasets && data.datasets.length > 0) {
+                        let html = '<h3>Available Datasets:</h3>';
+                        data.datasets.forEach(ds => {
+                            const trustBadge = ds.trust_score >= 0.9 ? '✓ Official' : 
+                                             ds.trust_score >= 0.8 ? '⚠ Medium' : '• User';
+                            html += `<div class="response-box" style="margin: 10px 0;">
+                                <strong>${ds.name}</strong> <span style="color: #666; font-size: 0.85em;">(${trustBadge})</span><br>
+                                <em>${ds.description || 'No description'}</em><br>
+                                <small>Documents: ${ds.document_count} | Trust: ${ds.trust_score}</small>
+                            </div>`;
+                        });
+                        div.innerHTML = html;
+                    } else {
+                        div.innerHTML = '<p>No datasets uploaded yet.</p>';
+                    }
+                    div.style.display = 'block';
+                })
+                .catch(e => {
+                    div.innerHTML = `<div class="response-box" style="border-left-color: #f44336;">
+                        <strong style="color: #f44336;">Error:</strong> ${e}
+                    </div>`;
+                    div.style.display = 'block';
+                });
+            } else {
+                div.style.display = 'none';
+            }
+        }
+        
+        // Ask follow-up question
+        function askFollowup(question) {
+            document.getElementById('questionInput').value = question;
+            askQuestion();
         }
         
         // Enter to submit

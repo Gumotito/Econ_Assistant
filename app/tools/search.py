@@ -21,11 +21,30 @@ def set_db_service(service):
 
 @traceable(name="search_dataset", run_type="tool")
 def search_dataset(query: str) -> str:
-    """Search dataset and knowledge base using RAG"""
+    """
+    Search dataset and knowledge base using RAG.
+    Automatically assumes Moldova context for economic queries.
+    """
     if not db_service:
         return "Dataset not indexed yet"
     
-    results = db_service.search(query, n_results=5)
+    # Auto-add Moldova context for economic queries if not specified
+    economic_keywords = ['GDP', 'export', 'import', 'economy', 'inflation', 'trade', 
+                        'growth', 'debt', 'budget', 'tariff', 'currency', 'exchange rate',
+                        'population', 'unemployment', 'revenue', 'spending']
+    
+    has_country = any(country.lower() in query.lower() for country in 
+                     ['Moldova', 'Ukraine', 'Romania', 'Russia', 'USA', 'US', 'EU', 
+                      'Germany', 'Poland', 'China', 'United States'])
+    
+    has_economic_term = any(keyword.lower() in query.lower() for keyword in economic_keywords)
+    
+    # If it's an economic query without a country, search with Moldova context
+    search_query = query
+    if has_economic_term and not has_country:
+        search_query = f"Moldova {query}"
+    
+    results = db_service.search(search_query, n_results=5)
     
     if results['documents'] and results['documents'][0]:
         docs = results['documents'][0]

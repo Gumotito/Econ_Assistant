@@ -16,7 +16,7 @@ class Config:
     CHROMA_PERSIST_DIR = os.getenv('CHROMA_PERSIST_DIR', 'chroma_db')
     
     # LLM
-    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'mistral')
+    OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen2.5:14b')
     MAX_QUERY_LENGTH = int(os.getenv('MAX_QUERY_LENGTH', 5000))
     MAX_ITERATIONS = int(os.getenv('MAX_ITERATIONS', 3))
     

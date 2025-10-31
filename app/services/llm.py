@@ -19,12 +19,27 @@ class LLMService:
         """Test Ollama connection"""
         try:
             import ollama
-            models = ollama.list()
-            if models and 'models' in models:
-                model_names = [m.get('name', 'unknown') for m in models.get('models', [])]
-                print(f"✓ Ollama connected. Available models: {model_names}")
+            models_response = ollama.list()
+            
+            # Handle different response formats
+            if hasattr(models_response, 'models'):
+                # Response is an object with models attribute
+                models_list = models_response.models
+                model_names = [m.model if hasattr(m, 'model') else m.get('model', 'unknown') 
+                              for m in models_list]
+            elif isinstance(models_response, dict) and 'models' in models_response:
+                # Response is a dict with 'models' key
+                model_names = [m.get('model', m.get('name', 'unknown')) 
+                              for m in models_response['models']]
             else:
-                print(f"✓ Ollama connected. Models: {models}")
+                model_names = ['Could not parse model list']
+            
+            print(f"✓ Ollama connected. Available models: {model_names}")
+            
+            # Verify our configured model is available
+            if self.model not in model_names and not any(self.model in m for m in model_names):
+                print(f"⚠ WARNING: Configured model '{self.model}' not found in available models!")
+            
             return True
         except Exception as e:
             print(f"✗ Ollama error: {e}")

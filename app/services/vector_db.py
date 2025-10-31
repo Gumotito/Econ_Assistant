@@ -26,15 +26,65 @@ class VectorDBService:
         
         print(f"✓ Vector DB initialized with {self.collection.count()} documents")
         
-    def search(self, query: str, n_results: int = 5) -> Dict[str, Any]:
-        """Search the vector database"""
-        if not self.collection:
-            return {'documents': [[]], 'metadatas': [[]]}
+    def search(self, query: str, n_results: int = 5, min_trust: float = 0.0) -> Dict[str, Any]:
+        """
+        Search the vector database with optional trust score filtering and weighting.
         
-        return self.collection.query(
+        Args:
+            query: Search query string
+            n_results: Number of results to return
+            min_trust: Minimum trust score threshold (0.0-1.0). Results below this are filtered out.
+        
+        Returns:
+            Dict with 'documents', 'metadatas', 'distances' keys
+        """
+        if not self.collection:
+            return {'documents': [[]], 'metadatas': [[]], 'distances': [[]]}
+        
+        # Get more results initially for filtering
+        fetch_count = n_results * 3 if min_trust > 0 else n_results
+        
+        results = self.collection.query(
             query_texts=[query],
-            n_results=n_results
+            n_results=fetch_count
         )
+        
+        # If no trust filtering, return as-is
+        if min_trust <= 0.0:
+            return results
+        
+        # Filter and re-rank by trust score
+        filtered_docs = []
+        filtered_meta = []
+        filtered_dist = []
+        
+        for i, (doc, meta, dist) in enumerate(zip(
+            results['documents'][0],
+            results['metadatas'][0],
+            results.get('distances', [[]])[0] if results.get('distances') else [1.0] * len(results['documents'][0])
+        )):
+            trust_score = float(meta.get('trust_score', 0.6))  # Default to 0.6 for general web
+            
+            if trust_score >= min_trust:
+                # Weight distance by trust score (higher trust = lower effective distance)
+                weighted_dist = dist / (trust_score + 0.1)  # +0.1 to avoid division by zero
+                
+                filtered_docs.append(doc)
+                filtered_meta.append(meta)
+                filtered_dist.append(weighted_dist)
+        
+        # Sort by weighted distance and take top n_results
+        if filtered_docs:
+            sorted_indices = sorted(range(len(filtered_dist)), key=lambda i: filtered_dist[i])
+            sorted_indices = sorted_indices[:n_results]
+            
+            return {
+                'documents': [[filtered_docs[i] for i in sorted_indices]],
+                'metadatas': [[filtered_meta[i] for i in sorted_indices]],
+                'distances': [[filtered_dist[i] for i in sorted_indices]]
+            }
+        
+        return {'documents': [[]], 'metadatas': [[]], 'distances': [[]]}
     
     def add_knowledge(self, content: str, source: str = "web_search", metadata: Dict = None) -> bool:
         """Add new knowledge to the database"""

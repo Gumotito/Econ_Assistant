@@ -1,16 +1,24 @@
 """Tool implementations for the agent"""
 from .search import search_dataset
-from .web import web_search
+from .web import web_search, search_official_sources
 from .calculate import calculate
 from .analyze import analyze_column
 from .learn import add_learned_info
+from .verify import verify_with_sources, list_datasets, get_source_trust_score
+from .forecast import forecast_economic_indicator, forecast_trade_balance
 
 __all__ = [
     'search_dataset',
-    'web_search', 
+    'web_search',
+    'search_official_sources',
     'calculate',
     'analyze_column',
-    'add_learned_info'
+    'add_learned_info',
+    'verify_with_sources',
+    'list_datasets',
+    'get_source_trust_score',
+    'forecast_economic_indicator',
+    'forecast_trade_balance'
 ]
 
 # Tool definitions for Ollama
@@ -19,13 +27,30 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "search_dataset",
-            "description": "Search both dataset AND all previously learned information (web searches, insights, etc.)",
+            "description": "PRIORITY 1: ALWAYS USE THIS FIRST. Search dataset AND all previously learned information (web searches, insights, etc.). For Moldova economics questions, always try this before any other tool.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query"
+                        "description": "The search query (automatically assumes Moldova context)"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_official_sources",
+            "description": "PRIORITY 2: Use AFTER search_dataset. Search ONLY official Moldova sources: statistica.md (National Statistics), World Bank Moldova, IMF Moldova, UN Comtrade, National Bank of Moldova. Use this for authoritative Moldova economic data before using web_search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for Moldova official economic data (Moldova context automatically assumed)"
                     }
                 },
                 "required": ["query"]
@@ -36,13 +61,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web - results are automatically saved to knowledge base",
+            "description": "PRIORITY 3: FALLBACK ONLY. General web search - use ONLY if search_dataset and search_official_sources did not find the answer. Automatically adds Moldova context to economic queries. Results saved to knowledge base.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query"
+                        "description": "The search query (Moldova context auto-added for economic terms)"
                     }
                 },
                 "required": ["query"]
@@ -106,6 +131,123 @@ TOOLS = [
                     }
                 },
                 "required": ["information"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_official_sources",
+            "description": "Search ONLY official high-trust sources: statistica.md, World Bank, IMF, UN Comtrade, National Bank of Moldova. Use this for authoritative economic data.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for official economic data"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_with_sources",
+            "description": "Cross-check a data claim against official sources (World Bank, IMF, National Statistics) to verify accuracy and provide confidence score.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "claim": {
+                        "type": "string",
+                        "description": "The data claim or fact to verify (e.g., 'Moldova GDP 2023 was $15.5B')"
+                    },
+                    "current_value": {
+                        "type": "string",
+                        "description": "Optional current value to compare against"
+                    }
+                },
+                "required": ["claim"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_datasets",
+            "description": "List all available datasets with descriptions, including user-uploaded and system datasets.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_source_trust_score",
+            "description": "Get the trust/reliability score (0-1) for a data source with explanation of its credibility level.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_name": {
+                        "type": "string",
+                        "description": "Name of the data source (e.g., 'statistica.md', 'World Bank', 'tradingeconomics.com')"
+                    }
+                },
+                "required": ["source_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forecast_economic_indicator",
+            "description": "Forecast future values of economic indicators using statistical models (linear trend, growth rate, exponential smoothing, ensemble). Use this to predict GDP, exports, imports, trade values, or any numeric indicator. ALWAYS use this instead of saying 'further investigation needed'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "indicator": {
+                        "type": "string",
+                        "description": "Name of the indicator to forecast (e.g., 'GDP', 'exports', 'imports', 'Value')"
+                    },
+                    "time_periods": {
+                        "type": "integer",
+                        "description": "Number of periods ahead to forecast (default: 12). For months, use 12 for 1 year."
+                    },
+                    "method": {
+                        "type": "string",
+                        "description": "Forecasting method: 'ensemble' (recommended, combines multiple models), 'trend' (linear), 'growth' (CAGR), 'smooth' (exponential), 'moving_average'",
+                        "enum": ["ensemble", "trend", "growth", "smooth", "moving_average"]
+                    }
+                },
+                "required": ["indicator"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forecast_trade_balance",
+            "description": "Forecast Moldova's trade balance (exports - imports) for future periods. Predicts whether Moldova will have trade surplus or deficit.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "export_indicator": {
+                        "type": "string",
+                        "description": "Column name for export values (default: 'Value')"
+                    },
+                    "import_indicator": {
+                        "type": "string",
+                        "description": "Column name for import values (default: 'Value')"
+                    },
+                    "periods_ahead": {
+                        "type": "integer",
+                        "description": "Number of periods to forecast (default: 6)"
+                    }
+                },
+                "required": []
             }
         }
     }
